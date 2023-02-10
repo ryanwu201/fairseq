@@ -130,6 +130,14 @@ class HubertAsrConfig(FairseqDataclass):
         default=0.0,
         metadata={"help": "reset feature grad mult in hubert to this"},
     )
+    # Add "autoregressive" option to "fairseq/models/hubert/hubert_asr.py:HubertAsrConfig" to load model from hubert checkpoint normally.
+    autoregressive: bool = field(
+        default=False,
+        metadata={
+            "help": "required for autoregressive decoders (like seq2seq models); "
+                    "adds 'prev_output_tokens' to input and appends eos to target"
+        },
+    )
     layerdrop: float = field(
         default=0.0,
         metadata={"help": "probability of dropping a layer in hubert"},
@@ -366,8 +374,11 @@ class HubertEncoder(FairseqEncoder):
 
         model = pretrain_task.build_model(w2v_args.model, from_checkpoint=True)
         if state is not None and not cfg.no_pretrained_weights:
+            logger.info("Loading pretrained weights!")
             # set strict=False because we omit some modules
             model.load_state_dict(state["model"], strict=False)
+        else:
+            logger.info("Did not load pretrained weights!")
 
         model.remove_pretraining_modules()
 
