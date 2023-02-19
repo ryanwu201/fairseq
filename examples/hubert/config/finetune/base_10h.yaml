@@ -26,7 +26,8 @@ task:
   fine_tuning: true
   label_dir: ???
   normalize: false  # must be consistent with pre-training
-  labels: ["ltr"]
+  labels: [ "ltr" ]
+  label_rates: null
   single_target: true
 
 dataset:
@@ -36,6 +37,7 @@ dataset:
   validate_interval: 5
   train_subset: train
   valid_subset: valid
+  batch_size: null
 
 criterion:
   _name: ctc
@@ -43,9 +45,9 @@ criterion:
 
 optimization:
   max_update: 25000
-  lr: [2e-5]
+  lr: [ 2e-5 ]
   sentence_avg: true
-  update_freq: [1]
+  update_freq: [ 1 ]
 
 optimizer:
   _name: adam

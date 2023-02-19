@@ -59,11 +59,15 @@ class HubertPretrainingConfig(FairseqDataclass):
         default=-1.0,
         metadata={"help": "label frame rate. -1.0 for sequence label"},
     )
+    label_rates: Optional[List[float]] = field(
+        default_factory=lambda: None,
+        metadata={"help": "label frame rate. -1.0 for sequence label"},
+    )
     sample_rate: int = field(
         default=16_000,
         metadata={
             "help": "target sample rate. audio files will be up/down "
-            "sampled to this rate"
+                    "sampled to this rate"
         },
     )
     normalize: bool = field(
@@ -104,12 +108,11 @@ class HubertPretrainingConfig(FairseqDataclass):
 
 @register_task("hubert_pretraining", dataclass=HubertPretrainingConfig)
 class HubertPretrainingTask(FairseqTask):
-
     cfg: HubertPretrainingConfig
 
     def __init__(
-        self,
-        cfg: HubertPretrainingConfig,
+            self,
+            cfg: HubertPretrainingConfig,
     ) -> None:
         super().__init__(cfg)
 
@@ -118,10 +121,9 @@ class HubertPretrainingTask(FairseqTask):
 
         self.cfg = cfg
         self.fine_tuning = cfg.fine_tuning
-
         if cfg.fine_tuning:
-            self.state.add_factory("target_dictionary", self.load_dictionaries)
-        else:
+            self.state.add_factory("target_dictionary", lambda: self.load_dictionaries()[0])
+        if not cfg.single_target:
             self.state.add_factory("dictionaries", self.load_dictionaries)
 
         self.blank_symbol = "<s>"
@@ -135,12 +137,14 @@ class HubertPretrainingTask(FairseqTask):
         return self.state.target_dictionary
 
     @property
-    def dictionaries(self) -> List[Dictionary]:
+    def dictionaries(self) -> Optional[List[Dictionary]]:
+        if 'dictionaries' not in self.state.state_dict.keys() and 'dictionaries' not in self.state.factories_dict.keys():
+            return None
         return self.state.dictionaries
 
     @classmethod
     def setup_task(
-        cls, cfg: HubertPretrainingConfig, **kwargs
+            cls, cfg: HubertPretrainingConfig, **kwargs
     ) -> "HubertPretrainingTask":
         return cls(cfg)
 
@@ -150,7 +154,7 @@ class HubertPretrainingTask(FairseqTask):
             Dictionary.load(f"{label_dir}/dict.{label}.txt")
             for label in self.cfg.labels
         ]
-        return dictionaries[0] if self.cfg.fine_tuning else dictionaries
+        return dictionaries
 
     def get_label_dir(self) -> str:
         if self.cfg.label_dir is None:
@@ -159,7 +163,7 @@ class HubertPretrainingTask(FairseqTask):
 
     def load_dataset(self, split: str, **kwargs) -> None:
         manifest = f"{self.cfg.data}/{split}.tsv"
-        dicts = [self.target_dictionary] if self.cfg.fine_tuning else self.dictionaries
+        dicts = [self.target_dictionary] if self.cfg.fine_tuning and self.cfg.single_target else self.dictionaries
         pad_list = [dict.pad() for dict in dicts]
         eos_list = [dict.eos() for dict in dicts]
         procs = [LabelEncoder(dict) for dict in dicts]
@@ -170,7 +174,7 @@ class HubertPretrainingTask(FairseqTask):
             manifest,
             sample_rate=self.cfg.sample_rate,
             label_paths=paths,
-            label_rates=self.cfg.label_rate,
+            label_rates=self.cfg.label_rate if not self.cfg.label_rates else self.cfg.label_rates,
             pad_list=pad_list,
             eos_list=eos_list,
             label_processors=procs,

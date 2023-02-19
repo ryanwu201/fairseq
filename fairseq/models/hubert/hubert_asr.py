@@ -79,7 +79,7 @@ class HubertAsrConfig(FairseqDataclass):
         default=0.5,
         metadata={
             "help": "probability of replacing a token with mask "
-            "(normalized by length)"
+                    "(normalized by length)"
         },
     )
     mask_selection: MASKING_DISTRIBUTION_CHOICES = field(
@@ -89,8 +89,8 @@ class HubertAsrConfig(FairseqDataclass):
         default=0,
         metadata={
             "help": "secondary mask argument "
-            "(used for more complex distributions), "
-            "see help in compute_mask_indices"
+                    "(used for more complex distributions), "
+                    "see help in compute_mask_indices"
         },
     )
     no_mask_overlap: bool = field(
@@ -114,8 +114,8 @@ class HubertAsrConfig(FairseqDataclass):
         default=0,
         metadata={
             "help": "secondary mask argument "
-            "(used for more complex distributions), "
-            "see help in compute_mask_indices"
+                    "(used for more complex distributions), "
+                    "see help in compute_mask_indices"
         },
     )
     no_mask_channel_overlap: bool = field(
@@ -171,14 +171,14 @@ class HubertCtc(BaseFairseqModel):
         w2v_encoder = HubertEncoder(cfg, task)
         return cls(cfg, w2v_encoder)
 
-    def get_normalized_probs(self, net_output, log_probs):
+    def get_normalized_probs(self, net_output, log_probs, dim=-1):
         """Get normalized probabilities (or log probs) from a net's output."""
 
         logits = net_output["encoder_out"]
         if log_probs:
-            return utils.log_softmax(logits.float(), dim=-1)
+            return utils.log_softmax(logits.float(), dim=dim)
         else:
-            return utils.softmax(logits.float(), dim=-1)
+            return utils.softmax(logits.float(), dim=dim)
 
     def get_logits(self, net_output):
         logits = net_output["encoder_out"]
@@ -309,11 +309,11 @@ class HubertSeq2SeqModel(FairseqEncoderDecoderModel):
         return state_dict
 
     def load_state_dict(
-        self,
-        state_dict,
-        strict=True,
-        model_cfg=None,
-        args: Optional[Namespace] = None,
+            self,
+            state_dict,
+            strict=True,
+            model_cfg=None,
+            args: Optional[Namespace] = None,
     ):
         if model_cfg.reset_dict:
             logger.warn("Overriding loading strict state dict!")
@@ -392,7 +392,12 @@ class HubertEncoder(FairseqEncoder):
         self.freeze_finetune_updates = cfg.freeze_finetune_updates
         self.num_updates = 0
 
-        if task.target_dictionary is not None and not cfg.autoregressive:
+        self.output_shape = None
+        if task.dictionaries is not None and not task.cfg.single_target and task.cfg.fine_tuning:
+            from math import prod
+            self.output_shape = [len(dictionary) for dictionary in task.dictionaries]
+            self.proj = Linear(d, prod(self.output_shape))
+        elif task.target_dictionary is not None and not cfg.autoregressive:
             self.proj = Linear(d, len(task.target_dictionary))
         elif getattr(cfg, "decoder_embed_dim", d) != d:
             self.proj = Linear(d, cfg.decoder_embed_dim)
@@ -417,14 +422,21 @@ class HubertEncoder(FairseqEncoder):
         with torch.no_grad() if not ft else contextlib.ExitStack():
             x, padding_mask = self.w2v_model.extract_features(**w2v_args)
 
+            # B x T x _
+            size1, size2 = x.size()[:2]
             if tbc:
                 # B x T x C -> T x B x C
                 x = x.transpose(0, 1)
+                # T x B x _
+                size1, size2 = size2, size1
 
         x = self.final_dropout(x)
 
         if self.proj:
             x = self.proj(x)
+
+        if self.output_shape:
+            x = x.view(size1, size2, self.output_shape[0], self.output_shape[1])
 
         return {
             "encoder_out": x,  # T x B x C
@@ -469,11 +481,11 @@ class TransformerDecoder(FairseqIncrementalDecoder):
     """
 
     def __init__(
-        self,
-        cfg: HubertSeq2SeqConfig,
-        dictionary,
-        embed_tokens,
-        no_encoder_attn=False,
+            self,
+            cfg: HubertSeq2SeqConfig,
+            dictionary,
+            embed_tokens,
+            no_encoder_attn=False,
     ):
         super().__init__(dictionary)
 
@@ -532,7 +544,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             self.embed_out = nn.Parameter(
                 torch.Tensor(len(dictionary), self.output_embed_dim)
             )
-            nn.init.normal_(self.embed_out, mean=0, std=self.output_embed_dim**-0.5)
+            nn.init.normal_(self.embed_out, mean=0, std=self.output_embed_dim ** -0.5)
 
         if transformer_cfg.decoder_normalize_before:
             self.layer_norm = LayerNorm(embed_dim)
@@ -540,7 +552,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             self.layer_norm = None
 
     def forward(
-        self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused
+            self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused
     ):
         """
         Args:
@@ -572,7 +584,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         return x, extra
 
     def extract_features(
-        self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused
+            self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused
     ):
         """
         Similar to *forward* but only return features.
@@ -657,10 +669,10 @@ class TransformerDecoder(FairseqIncrementalDecoder):
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
         if (
-            not hasattr(self, "_future_mask")
-            or self._future_mask is None
-            or self._future_mask.device != tensor.device
-            or self._future_mask.size(0) < dim
+                not hasattr(self, "_future_mask")
+                or self._future_mask is None
+                or self._future_mask.device != tensor.device
+                or self._future_mask.size(0) < dim
         ):
             self._future_mask = torch.triu(
                 utils.fill_with_neg_inf(tensor.new(dim, dim)), 1
@@ -673,7 +685,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
 def Embedding(num_embeddings, embedding_dim, padding_idx):
     m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-    nn.init.normal_(m.weight, mean=0, std=embedding_dim**-0.5)
+    nn.init.normal_(m.weight, mean=0, std=embedding_dim ** -0.5)
     nn.init.constant_(m.weight[padding_idx], 0)
     return m
 

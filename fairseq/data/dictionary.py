@@ -19,13 +19,13 @@ class Dictionary:
     """A mapping from symbols to consecutive integers"""
 
     def __init__(
-        self,
-        *,  # begin keyword-only arguments
-        bos="<s>",
-        pad="<pad>",
-        eos="</s>",
-        unk="<unk>",
-        extra_special_symbols=None,
+            self,
+            *,  # begin keyword-only arguments
+            bos="<s>",
+            pad="<pad>",
+            eos="</s>",
+            unk="<unk>",
+            extra_special_symbols=None,
     ):
         self.bos_word, self.unk_word, self.pad_word, self.eos_word = bos, unk, pad, eos
         self.symbols = []
@@ -66,14 +66,14 @@ class Dictionary:
         return self.unk_index
 
     def string(
-        self,
-        tensor,
-        bpe_symbol=None,
-        escape_unk=False,
-        extra_symbols_to_ignore=None,
-        unk_string=None,
-        include_eos=False,
-        separator=" ",
+            self,
+            tensor,
+            bpe_symbol=None,
+            escape_unk=False,
+            extra_symbols_to_ignore=None,
+            unk_string=None,
+            include_eos=False,
+            separator=" ",
     ):
         """Helper for converting a tensor of token indices to a string.
 
@@ -123,6 +123,7 @@ class Dictionary:
             return self.unk_word
 
     def add_symbol(self, word, n=1, overwrite=False):
+        if not word: return None
         """Adds a word to the dictionary"""
         if word in self.indices and not overwrite:
             idx = self.indices[word]
@@ -168,7 +169,7 @@ class Dictionary:
 
         c = Counter(
             dict(
-                sorted(zip(self.symbols[self.nspecial :], self.count[self.nspecial :]))
+                sorted(zip(self.symbols[self.nspecial:], self.count[self.nspecial:]))
             )
         )
         for symbol, count in c.most_common(nwords - self.nspecial):
@@ -213,7 +214,11 @@ class Dictionary:
         return self.unk_index
 
     @classmethod
-    def load(cls, f):
+    def load(cls, f,
+             bos="<s>",
+             pad="<pad>",
+             eos="</s>",
+             unk="<unk>"):
         """Loads the dictionary from a text file with the format:
 
         ```
@@ -222,7 +227,9 @@ class Dictionary:
         ...
         ```
         """
-        d = cls()
+        if ('.ltr.' not in f) and ('.wrd.' not in f):
+            bos, unk, eos = None, None, None
+        d = cls(bos=bos, unk=unk, pad=pad, eos=eos)
         d.add_from_file(f)
         return d
 
@@ -276,7 +283,11 @@ class Dictionary:
             PathManager.mkdirs(os.path.dirname(f))
             with PathManager.open(f, "w", encoding="utf-8") as fd:
                 return self.save(fd)
-        for k, v in kv_iterator:
+        kv_iterator = dict(kv_iterator)
+        keys = list(kv_iterator.keys())
+        keys.sort()
+        for k in keys:
+            v = kv_iterator[k]
             print("{} {}".format(k, v), file=f)
 
     def _get_meta(self):
@@ -291,8 +302,8 @@ class Dictionary:
         self._save(
             f,
             zip(
-                ex_keys + self.symbols[self.nspecial :],
-                ex_vals + self.count[self.nspecial :],
+                ex_keys + self.symbols[self.nspecial:],
+                ex_vals + self.count[self.nspecial:],
             ),
         )
 
@@ -302,15 +313,17 @@ class Dictionary:
         return t
 
     def encode_line(
-        self,
-        line,
-        line_tokenizer=tokenize_line,
-        add_if_not_exist=True,
-        consumer=None,
-        append_eos=True,
-        reverse_order=False,
+            self,
+            line,
+            line_tokenizer=tokenize_line,
+            add_if_not_exist=True,
+            consumer=None,
+            append_eos=True,
+            reverse_order=False,
     ) -> torch.IntTensor:
         words = line_tokenizer(line)
+        if not self.bos_word:
+            return torch.tensor(list(map(float, words)))
         if reverse_order:
             words = list(reversed(words))
         nwords = len(words)
@@ -330,11 +343,11 @@ class Dictionary:
 
     @staticmethod
     def _add_file_to_dictionary_single_worker(
-        filename,
-        tokenize,
-        eos_word,
-        start_offset,
-        end_offset,
+            filename,
+            tokenize,
+            eos_word,
+            start_offset,
+            end_offset,
     ):
         counter = Counter()
         with Chunker(filename, start_offset, end_offset) as line_iterator:
