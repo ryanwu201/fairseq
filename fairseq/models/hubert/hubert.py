@@ -530,8 +530,9 @@ class HubertModel(BaseFairseqModel):
         padding_mask: Optional[torch.Tensor] = None,
         mask: bool = False,
         ret_conv: bool = False,
+        ret_both_features: bool = False,
         output_layer: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple:
         res = self.forward(
             source,
             padding_mask=padding_mask,
@@ -540,7 +541,10 @@ class HubertModel(BaseFairseqModel):
             output_layer=output_layer,
         )
         feature = res["features"] if ret_conv else res["x"]
-        return feature, res["padding_mask"]
+        output = feature, res["padding_mask"]
+        if ret_both_features:
+            output = *output, res["features"]
+        return output
 
     def get_logits(self, net_output, is_masked=True):
         if is_masked:

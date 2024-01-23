@@ -151,6 +151,9 @@ class HubertAsrConfig(FairseqDataclass):
 
 @dataclass
 class HubertCtcConfig(HubertAsrConfig):
+    extra_ret_conv: Optional[bool] = field(default=False,
+                                           metadata={
+                                               "help": "return conv features? default only output transformer features"})
     pass
 
 
@@ -191,8 +194,80 @@ class HubertCtc(BaseFairseqModel):
         return logits
 
     def forward(self, **kwargs):
+        kwargs['ret_conv'] = kwargs.get('ret_conv', self.cfg.extra_ret_conv)
+
         x = self.w2v_encoder(**kwargs)
         return x
+
+
+@dataclass
+class HubertCtcWithDomainConfig(HubertCtcConfig):
+    alpha: float = field(
+        default=1.0,
+        metadata={"help": "update probability of domain classification"},
+    )
+    pass
+
+
+@register_model("hubert_ctc_with_domain", dataclass=HubertCtcWithDomainConfig)
+class HubertCtcWithDomain(HubertCtc):
+    def __init__(self, cfg: HubertCtcWithDomainConfig, w2v_encoder: BaseFairseqModel, task: FairseqTask):
+        super().__init__(cfg, w2v_encoder)
+        self.task = task
+        d = self.w2v_encoder.w2v_args.model.encoder_embed_dim
+        self.proj_prev = Linear(d, d)
+        self.predictors = nn.ModuleList(
+            [Linear(d, len(self.task.target_dictionary)), Linear(d, 2)])
+
+    def forward(self, encoder_only=False, **kwargs):
+        kwargs['ret_conv'] = kwargs.get('ret_conv', self.cfg.extra_ret_conv)
+
+        out = self.w2v_encoder(**kwargs)
+        if encoder_only:
+            return out
+
+        x = out['encoder_out']
+
+        outputs = []
+        if self.proj_prev:
+            x = self.proj_prev(x)
+
+        for i, predictor in enumerate(self.predictors):
+            if i == 1:
+                features = out['features']
+                features = features.mean(dim=0)
+                features = ReverseLayerF.apply(features, self.cfg.alpha)
+
+                temp = predictor(features)
+            else:
+                temp = predictor(x)
+            outputs.append(temp)
+        out["encoder_out"] = outputs[0]  # T x B x C
+        out["domain_out"] = outputs[1]  # B x C
+        return out
+
+    @classmethod
+    def build_model(cls, cfg: HubertCtcWithDomainConfig, task: FairseqTask):
+        """Build a new model instance."""
+        w2v_encoder = HubertEncoder(cfg, task, encoder_only=True)
+        return cls(cfg, w2v_encoder, task)
+
+
+@register_model("hubert_ctc_with_pitch_detection", dataclass=HubertCtcConfig)
+class HubertCtcWithPitchDetection(HubertCtc):
+    def forward(self, **kwargs):
+        kwargs['ret_conv'] = kwargs.get('ret_conv', self.cfg.extra_ret_conv)
+
+        out = self.w2v_encoder(**kwargs)
+
+        x = out['encoder_out']
+
+        y_lyrics = torch.sum(x, dim=3)  # (time, batch, n_ch)
+        y_melody = torch.sum(x, dim=2)  # (time, batch, n_p)
+
+        out["encoder_out"] = y_lyrics
+        out["melody_out"] = y_melody
+        return out
 
 
 @dataclass
@@ -324,9 +399,9 @@ class HubertSeq2SeqModel(FairseqEncoderDecoderModel):
 
 
 class HubertEncoder(FairseqEncoder):
-    def __init__(self, cfg: HubertAsrConfig, task):
+    def __init__(self, cfg: HubertAsrConfig, task, encoder_only=False):
         self.apply_mask = cfg.apply_mask
-
+        self.encoder_only = encoder_only
         arg_overrides = {
             "dropout": cfg.dropout,
             "activation_dropout": cfg.activation_dropout,
@@ -385,43 +460,51 @@ class HubertEncoder(FairseqEncoder):
         super().__init__(pretrain_task.source_dictionary)
 
         d = w2v_args.model.encoder_embed_dim
+        self.w2v_args = w2v_args
 
         self.w2v_model = model
 
         self.final_dropout = nn.Dropout(cfg.final_dropout)
         self.freeze_finetune_updates = cfg.freeze_finetune_updates
         self.num_updates = 0
-
+        self.ft = None
+        self.proj = None
         self.output_shape = None
-        if task.dictionaries is not None and not task.cfg.single_target and task.cfg.fine_tuning:
-            from math import prod
-            self.output_shape = [len(dictionary) for dictionary in task.dictionaries]
-            self.proj = Linear(d, prod(self.output_shape))
-        elif task.target_dictionary is not None and not cfg.autoregressive:
-            self.proj = Linear(d, len(task.target_dictionary))
-        elif getattr(cfg, "decoder_embed_dim", d) != d:
-            self.proj = Linear(d, cfg.decoder_embed_dim)
-        else:
-            self.proj = None
+        self.proj_prev = None
+        if not self.encoder_only:
+            self.proj_prev = Linear(d, d)
+            if task.dictionaries is not None and not task.cfg.single_target and task.cfg.fine_tuning:
+                from math import prod
+                self.output_shape = [len(dictionary) for dictionary in task.dictionaries]
+                self.proj = Linear(d, prod(self.output_shape))
+            elif task.target_dictionary is not None and not cfg.autoregressive:
+                self.proj = Linear(d, len(task.target_dictionary))
+            elif getattr(cfg, "decoder_embed_dim", d) != d:
+                self.proj = Linear(d, cfg.decoder_embed_dim)
+            else:
+                self.proj = None
 
     def set_num_updates(self, num_updates):
         """Set the number of parameters updates."""
         super().set_num_updates(num_updates)
         self.num_updates = num_updates
 
-    def forward(self, source, padding_mask, tbc=True, **kwargs):
+    def forward(self, source, padding_mask, tbc=True, ret_conv=False, **kwargs):
 
         w2v_args = {
             "source": source,
             "padding_mask": padding_mask,
             "mask": self.apply_mask and self.training,
+            "ret_both_features": ret_conv,
         }
 
         ft = self.freeze_finetune_updates <= self.num_updates
+        self.ft = ft
 
         with torch.no_grad() if not ft else contextlib.ExitStack():
-            x, padding_mask = self.w2v_model.extract_features(**w2v_args)
-
+            out_extract = self.w2v_model.extract_features(**w2v_args)
+            x, padding_mask = out_extract[:2]
+            features = out_extract[-1] if len(out_extract) > 2 else None
             # B x T x _
             size1, size2 = x.size()[:2]
             if tbc:
@@ -429,20 +512,30 @@ class HubertEncoder(FairseqEncoder):
                 x = x.transpose(0, 1)
                 # T x B x _
                 size1, size2 = size2, size1
+                if features is not None:
+                    # B x T x _ -> T x B x _
+                    features = features.transpose(0, 1)
 
         x = self.final_dropout(x)
 
+        features = features if features is not None else x.clone()
+
+        if self.proj_prev:
+            x = self.proj_prev(x)
         if self.proj:
             x = self.proj(x)
 
         if self.output_shape:
             x = x.view(size1, size2, self.output_shape[0], self.output_shape[1])
 
-        return {
+        output = {
             "encoder_out": x,  # T x B x C
             "encoder_padding_mask": padding_mask,  # B x T
             "padding_mask": padding_mask,
+            'features': features,
         }
+
+        return output
 
     def reorder_encoder_out(self, encoder_out, new_order):
         if encoder_out["encoder_out"] is not None:
@@ -696,3 +789,20 @@ def Linear(in_features, out_features, bias=True):
     if bias:
         nn.init.constant_(m.bias, 0.0)
     return m
+
+
+from torch.autograd import Function
+
+
+class ReverseLayerF(Function):
+
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha
+        return output, None
