@@ -5,160 +5,104 @@
 # can be found in the PATENTS file in the same directory.
 
 import math
-from argparse import Namespace
 from dataclasses import dataclass, field
-from omegaconf import II
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from fairseq import metrics, utils
-from fairseq.criterions import FairseqCriterion, register_criterion
-from fairseq.dataclass import FairseqDataclass
-from fairseq.data.data_utils import post_process
-from fairseq.tasks import FairseqTask
-from fairseq.logging.meters import safe_round
 
-import numpy as np
+from fairseq import metrics, utils
+from fairseq.criterions import register_criterion
+from fairseq.criterions.ctc import CtcCriterion, CtcCriterionConfig
+from fairseq.data.data_utils import post_process
+from fairseq.logging.meters import safe_round
+from fairseq.tasks import FairseqTask
+
+
+# Refer to https://github.com/DenisDsh/PyTorch-Deep-CORAL/blob/f42f4786ecaf94f8c2e537c11648d90ecf66b9dc/coral.py
+
+def coral_loss(features_source, features_target, pooling_style, dim=0):
+    def pooling(features, pooling_style, dim=0):
+        return features.mean(dim=dim) if pooling_style == 'mean' else features.max(dim=dim)[0]
+
+    features_source, features_target = pooling(features_source, pooling_style, dim=dim), pooling(
+        features_target, pooling_style, dim=dim)
+    return coral(features_source, features_target)
+
+
+def coral(source, target):
+    d = source.size(1)  # dim vector
+
+    source_c = compute_covariance(source)
+    target_c = compute_covariance(target)
+
+    loss = torch.sum(torch.mul((source_c - target_c), (source_c - target_c)))
+
+    loss = loss / (4 * d * d)
+    return loss
+
+
+def compute_covariance(input_data):
+    """
+    Compute Covariance matrix of the input data
+    """
+    n = input_data.size(0)  # batch_size
+
+    # Check if using gpu or cpu
+    if input_data.is_cuda:
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+
+    id_row = torch.ones(n).resize(1, n).to(device=device)
+    sum_column = torch.mm(id_row, input_data.float())
+    mean_column = torch.div(sum_column, n)
+    term_mul_2 = torch.mm(mean_column.t(), mean_column)
+    d_t_d = torch.mm(input_data.t(), input_data)
+    c = torch.add(d_t_d, (-1 * term_mul_2)) * 1 / (n - 1)
+
+    return c
 
 
 @dataclass
-class CtcCrossEntropyCriterionConfig(FairseqDataclass):
-    zero_infinity: bool = field(
-        default=False,
-        metadata={"help": "zero inf loss when source length <= target length"},
+class CtcCoralLossCriterionConfig(CtcCriterionConfig):
+    ctc_loss_w: float = field(
+        default=1.0,
+        metadata={"help": "update probability of ctc"},
     )
-    sentence_avg: bool = II("optimization.sentence_avg")
-    post_process: str = field(
-        default="letter",
-        metadata={
-            "help": "how to post process predictions into words. can be letter, "
-                    "wordpiece, BPE symbols, etc. "
-                    "See fairseq.data.data_utils.post_process() for full list of options"
-        },
-    )
-    wer_kenlm_model: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "if this is provided, use kenlm to compute wer (along with other wer_* args)"
-        },
-    )
-    wer_lexicon: Optional[str] = field(
-        default=None,
-        metadata={"help": "lexicon to use with wer_kenlm_model"},
-    )
-    wer_lm_weight: float = field(
-        default=2.0,
-        metadata={"help": "lm weight to use with wer_kenlm_model"},
-    )
-    wer_word_score: float = field(
-        default=-1.0,
-        metadata={"help": "lm word score to use with wer_kenlm_model"},
-    )
-    wer_sil_weight: float = field(
-        default=0,
-        metadata={"help": "lm word score to use with wer_kenlm_model"},
-    )
-
-    wer_args: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "DEPRECATED: tuple of (wer_kenlm_model, wer_lexicon, wer_lm_weight, wer_word_score)"
-        },
-    )
-    loss_w: float = field(
+    coral_loss_w: float = field(
         default=0.5,
-        metadata={"help": "weight of cross entropy loss"},
+        metadata={"help": "Weight that trades off the coral_loss for output"},
     )
+    coral_loss_w4conv: float = field(
+        default=0.0,
+        metadata={"help": "Weight that trades off the coral_loss for align conv features"},
+    )
+    pooling_style: str = field(
+        default='mean',
+        metadata={"help": "pooling_style[mean/max],default mean"},
+    )
+    pass
 
 
-@register_criterion("ctc_cross_entropy", dataclass=CtcCrossEntropyCriterionConfig)
-class CtcCrossEntropyCriterion(FairseqCriterion):
-    def __init__(
-            self, cfg: CtcCrossEntropyCriterionConfig, task: FairseqTask, rdrop_alpha: int = 0.0
-    ):
-        super().__init__(task)
-        self.blank_idx = (
-            task.target_dictionary.index(task.blank_symbol)
-            if hasattr(task, "blank_symbol")
-            else 0
-        )
-        self.pad_idx = task.target_dictionary.pad()
-        self.eos_idx = task.target_dictionary.eos()
-        self.post_process = cfg.post_process
+@register_criterion("ctc_with_coral_loss", dataclass=CtcCoralLossCriterionConfig)
+class CtcCoralLossCriterion(CtcCriterion):
 
-        self.rdrop_alpha = rdrop_alpha
+    def __init__(self, cfg: CtcCoralLossCriterionConfig, task: FairseqTask, rdrop_alpha: int = 0.0):
 
-        if cfg.wer_args is not None:
-            (
-                cfg.wer_kenlm_model,
-                cfg.wer_lexicon,
-                cfg.wer_lm_weight,
-                cfg.wer_word_score,
-            ) = eval(cfg.wer_args)
-
-        if cfg.wer_kenlm_model is not None and cfg.wer_kenlm_model != "":
-            from examples.speech_recognition.w2l_decoder import W2lKenLMDecoder
-
-            dec_args = Namespace()
-            dec_args.nbest = 1
-            dec_args.criterion = "ctc"
-            dec_args.kenlm_model = cfg.wer_kenlm_model
-            dec_args.lexicon = cfg.wer_lexicon
-            dec_args.beam = 50
-            dec_args.beam_size_token = min(50, len(task.target_dictionary))
-            dec_args.beam_threshold = min(50, len(task.target_dictionary))
-            dec_args.lm_weight = cfg.wer_lm_weight
-            dec_args.word_score = cfg.wer_word_score
-            dec_args.sil_weight = cfg.wer_sil_weight
-            dec_args.unk_weight = -math.inf
-            dec_args.sil_weight = 0
-
-            self.w2l_decoder = W2lKenLMDecoder(dec_args, task.target_dictionary)
-        else:
-            self.w2l_decoder = None
-
-        self.zero_infinity = cfg.zero_infinity
-        self.sentence_avg = cfg.sentence_avg
-        self.loss_w = cfg.loss_w
-
-    def normalize_frm_label(self, time_label, input_len, feat_len):
-        tar = np.full(shape=(time_label.shape[0], feat_len), fill_value=self.task.dictionaries[1].pad_index,
-                      dtype=np.short)
-        label2feat_ratio = feat_len * self.task.cfg.sample_rate / input_len
-
-        for i in np.arange(time_label.shape[0]):
-            for j in np.arange(0, time_label.shape[1], 3):
-                st, ed = map(int, time_label[i][j:j + 2] * label2feat_ratio)
-                symbol = str(int(time_label[i][j + 2].item()))
-                if int(symbol) == self.task.dictionaries[1].pad_index: continue
-
-                symbol_index = self.task.dictionaries[1].index(symbol)
-
-                tar[i][st:ed] = symbol_index
-        return torch.tensor(tar, dtype=torch.long).to(time_label.device)
+        super().__init__(cfg, task, rdrop_alpha)
+        self.cfg = cfg
 
     def forward(self, model, sample, reduce=True, **kwargs):
-        net_output = model(**sample["net_input"])  # (T, B, C): (time, batch, phone, pitch) from the encoder
-        y_lyrics = torch.sum(net_output["encoder_out"], dim=3)  # (time, batch, n_ch)
-        y_melody = torch.sum(net_output["encoder_out"], dim=2)  # (time, batch, n_p)
-
-        y_melody = y_melody.transpose(1, 2)  # (time, n_p, batch)
-        y_melody = y_melody.transpose(0, 2)  # (batch, n_p, time)
-
+        net_output = model(
+            **sample["net_input"],
+            ret_conv=self.cfg.coral_loss_w4conv > 0)  # (T, B, C): (time, batch, phone, pitch) from the encoder
+        out_source = net_output["encoder_out"]  # (time, batch, n_ch)
+        # features_source = net_output["features"]  # (time, batch, _)
+        features_source = out_source  # (time, batch, _)
         lprobs = model.get_normalized_probs(
-            {'encoder_out': y_lyrics}, log_probs=True, dim=2
+            {'encoder_out': out_source}, log_probs=True, dim=2
         ).contiguous()
 
-        melody_target = self.normalize_frm_label(sample["target_list"][1],sample['net_input']['source'].shape[-1], y_melody.shape[2])
-
-        sample["target_lengths"] = sample["target_lengths_list"][0]
-        sample["ntokens"] = sample["ntokens_list"][0]
-        sample["target"] = sample["target_list"][0]
-
-        del sample['target_lengths_list']
-        del sample['ntokens_list']
-        del sample['target_list']
         # CTC loss is calculated over duplicated inputs
         # sample is already duplicated for R-Drop
         if self.rdrop_alpha > 0:
@@ -199,6 +143,8 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
             target_lengths = pad_mask.sum(-1)
 
         with torch.backends.cudnn.flags(enabled=False):
+            losses = {}
+
             loss_ctc = F.ctc_loss(
                 lprobs,
                 targets_flat,
@@ -208,23 +154,50 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
                 reduction="sum",
                 zero_infinity=self.zero_infinity,
             )
-            loss_ce = F.cross_entropy(y_melody, melody_target)
-            loss = loss_ctc + self.loss_w * loss_ce
+
+            loss = loss_ctc * self.cfg.ctc_loss_w
+
+            losses['loss_ctc'] = utils.item(loss_ctc.data)
+
+            if model.w2v_encoder.ft and (self.cfg.coral_loss_w > 0 or self.cfg.coral_loss_w4conv > 0):
+                target_domain_net_output = model(
+                    **sample["target_domain_net_input"],
+                    ret_conv=self.cfg.coral_loss_w4conv > 0)  # (T, B, C): (time, batch, phone, pitch) from the encoder
+
+                # align final output
+                if self.cfg.coral_loss_w > 0:
+                    features_target = target_domain_net_output["encoder_out"]  # (time, batch, _)
+                    loss_coral = coral_loss(features_source, features_target, self.cfg.pooling_style, dim=0)
+
+                    loss += (self.cfg.coral_loss_w * loss_coral)
+
+                    losses['loss_coral'] = utils.item(loss_coral.data)
+
+                # align conv features
+                if self.cfg.coral_loss_w4conv > 0:
+                    features_source = net_output["features"]  # (time, batch, _)
+                    features_target = target_domain_net_output["features"]  # (time, batch, _)
+                    loss_coral_conv = coral_loss(features_source, features_target, self.cfg.pooling_style, dim=0)
+
+                    loss += (self.cfg.coral_loss_w4conv * loss_coral_conv)
+
+                    losses['loss_coral_conv'] = utils.item(loss_coral_conv.data)
+
+        losses['loss'] = utils.item(loss.data)
         ntokens = (
             sample["ntokens"] if "ntokens" in sample else target_lengths.sum().item()
         )
 
         sample_size = sample["target"].size(0) if self.sentence_avg else ntokens
         logging_output = {
-            "loss": utils.item(loss.data),  # * sample['ntokens'],
-            "loss_ctc": utils.item(loss_ctc.data),  # * sample['ntokens'],
-            "loss_ce": utils.item(loss_ce.data),  # * sample['ntokens'],
+            "losses": losses,
             "ntokens": ntokens,
             "nsentences": sample["id"].numel(),
             "sample_size": sample_size,
         }
 
         if not model.training:
+            sample = sample['target_domain_batch']
             import editdistance
 
             with torch.no_grad():
@@ -296,10 +269,9 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
+        assert len(logging_outputs) > 0
+        assert 'losses' in logging_outputs[0]
 
-        loss_sum = utils.item(sum(log.get("loss", 0) for log in logging_outputs))
-        loss_ctc = utils.item(sum(log.get("loss_ctc", 0) for log in logging_outputs))
-        loss_ce = utils.item(sum(log.get("loss_ce", 0) for log in logging_outputs))
         ntokens = utils.item(sum(log.get("ntokens", 0) for log in logging_outputs))
         nsentences = utils.item(
             sum(log.get("nsentences", 0) for log in logging_outputs)
@@ -308,15 +280,16 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
             sum(log.get("sample_size", 0) for log in logging_outputs)
         )
 
-        metrics.log_scalar(
-            "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
-        )
-        metrics.log_scalar(
-            "loss_ctc", loss_ctc / sample_size / math.log(2), sample_size, round=3
-        )
-        metrics.log_scalar(
-            "loss_ce", loss_ce / sample_size / math.log(2), sample_size, round=3
-        )
+        loss_sum = 0
+        loss_names = logging_outputs[0]['losses'].keys()
+        for loss_name in loss_names:
+            _loss = utils.item(sum(log['losses'].get(loss_name, 0) for log in logging_outputs))
+            if loss_name == 'loss':
+                loss_sum = _loss
+            metrics.log_scalar(
+                loss_name, _loss / sample_size / math.log(2), sample_size, round=3
+            )
+
         metrics.log_scalar("ntokens", ntokens)
         metrics.log_scalar("nsentences", nsentences)
         if sample_size != ntokens:
@@ -361,12 +334,3 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
                 if meters["_w_total"].sum > 0
                 else float("nan"),
             )
-
-    @staticmethod
-    def logging_outputs_can_be_summed() -> bool:
-        """
-        Whether the logging outputs returned by `forward` can be summed
-        across workers prior to calling `reduce_metrics`. Setting this
-        to True will improves distributed training speed.
-        """
-        return True

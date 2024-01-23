@@ -5,160 +5,58 @@
 # can be found in the PATENTS file in the same directory.
 
 import math
-from argparse import Namespace
 from dataclasses import dataclass, field
-from omegaconf import II
-from typing import Optional
-
-import torch
-import torch.nn.functional as F
-from fairseq import metrics, utils
-from fairseq.criterions import FairseqCriterion, register_criterion
-from fairseq.dataclass import FairseqDataclass
-from fairseq.data.data_utils import post_process
-from fairseq.tasks import FairseqTask
-from fairseq.logging.meters import safe_round
 
 import numpy as np
+import torch
+import torch.nn.functional as F
+
+from fairseq import metrics, utils
+from fairseq.criterions import register_criterion
+from fairseq.criterions.ctc import CtcCriterion, CtcCriterionConfig
+from fairseq.data.data_utils import post_process
+from fairseq.logging.meters import safe_round
+
+from fairseq.tasks import FairseqTask
 
 
 @dataclass
-class CtcCrossEntropyCriterionConfig(FairseqDataclass):
-    zero_infinity: bool = field(
-        default=False,
-        metadata={"help": "zero inf loss when source length <= target length"},
+class CtcCrossEntropyCriterionConfig(CtcCriterionConfig):
+    ctc_loss_w: float = field(
+        default=1.0,
+        metadata={"help": "update probability of ctc"},
     )
-    sentence_avg: bool = II("optimization.sentence_avg")
-    post_process: str = field(
-        default="letter",
-        metadata={
-            "help": "how to post process predictions into words. can be letter, "
-                    "wordpiece, BPE symbols, etc. "
-                    "See fairseq.data.data_utils.post_process() for full list of options"
-        },
-    )
-    wer_kenlm_model: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "if this is provided, use kenlm to compute wer (along with other wer_* args)"
-        },
-    )
-    wer_lexicon: Optional[str] = field(
-        default=None,
-        metadata={"help": "lexicon to use with wer_kenlm_model"},
-    )
-    wer_lm_weight: float = field(
-        default=2.0,
-        metadata={"help": "lm weight to use with wer_kenlm_model"},
-    )
-    wer_word_score: float = field(
-        default=-1.0,
-        metadata={"help": "lm word score to use with wer_kenlm_model"},
-    )
-    wer_sil_weight: float = field(
-        default=0,
-        metadata={"help": "lm word score to use with wer_kenlm_model"},
-    )
-
-    wer_args: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "DEPRECATED: tuple of (wer_kenlm_model, wer_lexicon, wer_lm_weight, wer_word_score)"
-        },
-    )
-    loss_w: float = field(
-        default=0.5,
-        metadata={"help": "weight of cross entropy loss"},
-    )
+    pass
 
 
-@register_criterion("ctc_cross_entropy", dataclass=CtcCrossEntropyCriterionConfig)
-class CtcCrossEntropyCriterion(FairseqCriterion):
-    def __init__(
-            self, cfg: CtcCrossEntropyCriterionConfig, task: FairseqTask, rdrop_alpha: int = 0.0
-    ):
-        super().__init__(task)
-        self.blank_idx = (
-            task.target_dictionary.index(task.blank_symbol)
-            if hasattr(task, "blank_symbol")
-            else 0
-        )
-        self.pad_idx = task.target_dictionary.pad()
-        self.eos_idx = task.target_dictionary.eos()
-        self.post_process = cfg.post_process
+@register_criterion("ctc_with_domain_cross_entropy", dataclass=CtcCrossEntropyCriterionConfig)
+class CtcCrossEntropyCriterion(CtcCriterion):
 
-        self.rdrop_alpha = rdrop_alpha
+    def __init__(self, cfg: CtcCrossEntropyCriterionConfig, task: FairseqTask, rdrop_alpha: int = 0.0):
 
-        if cfg.wer_args is not None:
-            (
-                cfg.wer_kenlm_model,
-                cfg.wer_lexicon,
-                cfg.wer_lm_weight,
-                cfg.wer_word_score,
-            ) = eval(cfg.wer_args)
-
-        if cfg.wer_kenlm_model is not None and cfg.wer_kenlm_model != "":
-            from examples.speech_recognition.w2l_decoder import W2lKenLMDecoder
-
-            dec_args = Namespace()
-            dec_args.nbest = 1
-            dec_args.criterion = "ctc"
-            dec_args.kenlm_model = cfg.wer_kenlm_model
-            dec_args.lexicon = cfg.wer_lexicon
-            dec_args.beam = 50
-            dec_args.beam_size_token = min(50, len(task.target_dictionary))
-            dec_args.beam_threshold = min(50, len(task.target_dictionary))
-            dec_args.lm_weight = cfg.wer_lm_weight
-            dec_args.word_score = cfg.wer_word_score
-            dec_args.sil_weight = cfg.wer_sil_weight
-            dec_args.unk_weight = -math.inf
-            dec_args.sil_weight = 0
-
-            self.w2l_decoder = W2lKenLMDecoder(dec_args, task.target_dictionary)
-        else:
-            self.w2l_decoder = None
-
-        self.zero_infinity = cfg.zero_infinity
-        self.sentence_avg = cfg.sentence_avg
-        self.loss_w = cfg.loss_w
-
-    def normalize_frm_label(self, time_label, input_len, feat_len):
-        tar = np.full(shape=(time_label.shape[0], feat_len), fill_value=self.task.dictionaries[1].pad_index,
-                      dtype=np.short)
-        label2feat_ratio = feat_len * self.task.cfg.sample_rate / input_len
-
-        for i in np.arange(time_label.shape[0]):
-            for j in np.arange(0, time_label.shape[1], 3):
-                st, ed = map(int, time_label[i][j:j + 2] * label2feat_ratio)
-                symbol = str(int(time_label[i][j + 2].item()))
-                if int(symbol) == self.task.dictionaries[1].pad_index: continue
-
-                symbol_index = self.task.dictionaries[1].index(symbol)
-
-                tar[i][st:ed] = symbol_index
-        return torch.tensor(tar, dtype=torch.long).to(time_label.device)
+        super().__init__(cfg, task, rdrop_alpha)
+        self.cfg = cfg
 
     def forward(self, model, sample, reduce=True, **kwargs):
-        net_output = model(**sample["net_input"])  # (T, B, C): (time, batch, phone, pitch) from the encoder
-        y_lyrics = torch.sum(net_output["encoder_out"], dim=3)  # (time, batch, n_ch)
-        y_melody = torch.sum(net_output["encoder_out"], dim=2)  # (time, batch, n_p)
-
-        y_melody = y_melody.transpose(1, 2)  # (time, n_p, batch)
-        y_melody = y_melody.transpose(0, 2)  # (batch, n_p, time)
+        net_output = model(
+            **sample["net_input"])  # (T, B, C): (time, batch, phone, pitch) from the encoder
+        y_lyrics = net_output["encoder_out"]  # (time, batch, n_ch)
+        y_source_domain = net_output["domain_out"]  # (batch, _)
 
         lprobs = model.get_normalized_probs(
             {'encoder_out': y_lyrics}, log_probs=True, dim=2
         ).contiguous()
 
-        melody_target = self.normalize_frm_label(sample["target_list"][1],sample['net_input']['source'].shape[-1], y_melody.shape[2])
+        source_domain_target = torch.zeros(y_source_domain.shape[0], dtype=torch.long).to(
+            y_source_domain.device)
 
-        sample["target_lengths"] = sample["target_lengths_list"][0]
-        sample["ntokens"] = sample["ntokens_list"][0]
-        sample["target"] = sample["target_list"][0]
+        target_domain_net_output = model(
+            **sample["target_domain_net_input"])  # (T, B, C): (time, batch, phone, pitch) from the encoder
+        y_target_domain = target_domain_net_output["domain_out"]  # (batch, _)
 
-        del sample['target_lengths_list']
-        del sample['ntokens_list']
-        del sample['target_list']
+        target_domain_target = torch.ones(y_target_domain.shape[0], dtype=torch.long).to(
+            y_target_domain.device)
+
         # CTC loss is calculated over duplicated inputs
         # sample is already duplicated for R-Drop
         if self.rdrop_alpha > 0:
@@ -208,8 +106,12 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
                 reduction="sum",
                 zero_infinity=self.zero_infinity,
             )
-            loss_ce = F.cross_entropy(y_melody, melody_target)
-            loss = loss_ctc + self.loss_w * loss_ce
+            loss_source_domain = F.cross_entropy(y_source_domain, source_domain_target)
+            loss_target_domain = F.cross_entropy(y_target_domain, target_domain_target)
+            if model.w2v_encoder.ft:
+                loss = self.cfg.ctc_loss_w * loss_ctc + loss_source_domain + loss_target_domain
+            else:
+                loss = loss_ctc
         ntokens = (
             sample["ntokens"] if "ntokens" in sample else target_lengths.sum().item()
         )
@@ -218,7 +120,8 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
         logging_output = {
             "loss": utils.item(loss.data),  # * sample['ntokens'],
             "loss_ctc": utils.item(loss_ctc.data),  # * sample['ntokens'],
-            "loss_ce": utils.item(loss_ce.data),  # * sample['ntokens'],
+            "loss_source_domain": utils.item(loss_source_domain.data),  # * sample['ntokens'],
+            "loss_target_domain": utils.item(loss_target_domain.data),  # * sample['ntokens'],
             "ntokens": ntokens,
             "nsentences": sample["id"].numel(),
             "sample_size": sample_size,
@@ -299,7 +202,8 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
 
         loss_sum = utils.item(sum(log.get("loss", 0) for log in logging_outputs))
         loss_ctc = utils.item(sum(log.get("loss_ctc", 0) for log in logging_outputs))
-        loss_ce = utils.item(sum(log.get("loss_ce", 0) for log in logging_outputs))
+        loss_source_domain = utils.item(sum(log.get("loss_source_domain", 0) for log in logging_outputs))
+        loss_target_domain = utils.item(sum(log.get("loss_target_domain", 0) for log in logging_outputs))
         ntokens = utils.item(sum(log.get("ntokens", 0) for log in logging_outputs))
         nsentences = utils.item(
             sum(log.get("nsentences", 0) for log in logging_outputs)
@@ -315,7 +219,10 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
             "loss_ctc", loss_ctc / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_scalar(
-            "loss_ce", loss_ce / sample_size / math.log(2), sample_size, round=3
+            "loss_source_domain", loss_source_domain / sample_size / math.log(2), sample_size, round=3
+        )
+        metrics.log_scalar(
+            "loss_target_domain", loss_target_domain / sample_size / math.log(2), sample_size, round=3
         )
         metrics.log_scalar("ntokens", ntokens)
         metrics.log_scalar("nsentences", nsentences)
@@ -361,12 +268,3 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
                 if meters["_w_total"].sum > 0
                 else float("nan"),
             )
-
-    @staticmethod
-    def logging_outputs_can_be_summed() -> bool:
-        """
-        Whether the logging outputs returned by `forward` can be summed
-        across workers prior to calling `reduce_metrics`. Setting this
-        to True will improves distributed training speed.
-        """
-        return True
