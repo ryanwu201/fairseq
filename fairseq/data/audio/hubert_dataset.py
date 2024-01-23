@@ -24,12 +24,13 @@ import io
 logger = logging.getLogger(__name__)
 
 
-def load_audio(manifest_path, max_keep, min_keep):
+def load_audio(manifest_path, max_keep, min_keep, dummy_size=None):
     n_long, n_short = 0, 0
     names, inds, sizes = [], [], []
     with open(manifest_path) as f:
         root = f.readline().strip()
-        for ind, line in enumerate(f):
+        f_iter = f if dummy_size is None else itertools.islice(f, dummy_size)
+        for ind, line in enumerate(f_iter):
             items = line.strip().split("\t")
             assert len(items) == 2, line
             sz = int(items[1])
@@ -52,21 +53,23 @@ def load_audio(manifest_path, max_keep, min_keep):
     return root, names, inds, tot, sizes
 
 
-def load_label(label_path, inds, tot):
+def load_label(label_path, inds, tot, dummy_size=None):
     with open(label_path) as f:
+        f = f if dummy_size is None else itertools.islice(f, dummy_size)
         labels = [line.rstrip() for line in f]
         assert (
-            len(labels) == tot
+                len(labels) == tot
         ), f"number of labels does not match ({len(labels)} != {tot})"
         labels = [labels[i] for i in inds]
     return labels
 
 
-def load_label_offset(label_path, inds, tot):
+def load_label_offset(label_path, inds, tot, dummy_size=None):
     with open(label_path) as f:
+        f = f if dummy_size is None else itertools.islice(f, dummy_size)
         code_lengths = [len(line.encode("utf-8")) for line in f]
         assert (
-            len(code_lengths) == tot
+                len(code_lengths) == tot
         ), f"number of labels does not match ({len(code_lengths)} != {tot})"
         offsets = list(itertools.accumulate([0] + code_lengths))
         offsets = [(offsets[i], offsets[i + 1]) for i in inds]
@@ -74,13 +77,13 @@ def load_label_offset(label_path, inds, tot):
 
 
 def verify_label_lengths(
-    audio_sizes,
-    audio_rate,
-    label_path,
-    label_rate,
-    inds,
-    tot,
-    tol=0.1,  # tolerance in seconds
+        audio_sizes,
+        audio_rate,
+        label_path,
+        label_rate,
+        inds,
+        tot,
+        tol=0.1,  # tolerance in seconds
 ):
     if label_rate < 0:
         logger.info(f"{label_path} is sequence label. skipped")
@@ -99,7 +102,7 @@ def verify_label_lengths(
                 (
                     f"audio and label duration differ too much "
                     f"(|{dur_from_audio} - {dur_from_label}| > {tol}) "
-                    f"in line {ind+1} of {label_path}. Check if `label_rate` "
+                    f"in line {ind + 1} of {label_path}. Check if `label_rate` "
                     f"is correctly set (currently {label_rate}). "
                     f"num. of samples = {audio_sizes[i]}; "
                     f"label length = {lengths[i]}"
@@ -114,26 +117,64 @@ def verify_label_lengths(
 
 class HubertDataset(FairseqDataset):
     def __init__(
-        self,
-        manifest_path: str,
-        sample_rate: float,
-        label_paths: List[str],
-        label_rates: Union[List[float], float],  # -1 for sequence labels
-        pad_list: List[str],
-        eos_list: List[str],
-        label_processors: Optional[List[Any]] = None,
-        max_keep_sample_size: Optional[int] = None,
-        min_keep_sample_size: Optional[int] = None,
-        max_sample_size: Optional[int] = None,
-        shuffle: bool = True,
-        pad_audio: bool = False,
-        normalize: bool = False,
-        store_labels: bool = True,
-        random_crop: bool = False,
-        single_target: bool = False,
+            self,
+            manifest_path: str,
+            sample_rate: float,
+            label_paths,
+            label_rates: Union[List[float], float],  # -1 for sequence labels
+            pad_list: List[str],
+            eos_list: List[str],
+            label_processors: Optional[List[Any]] = None,
+            max_keep_sample_size: Optional[int] = None,
+            min_keep_sample_size: Optional[int] = None,
+            max_sample_size: Optional[int] = None,
+            shuffle: bool = True,
+            pad_audio: bool = False,
+            normalize: bool = False,
+            store_labels: bool = True,
+            random_crop: bool = False,
+            single_target: bool = False,
+            dummy_size: int = None
     ):
+        self.is_multi_domain = (not isinstance(manifest_path, str))
+        if self.is_multi_domain:
+            self.has_target_label = (not isinstance(label_paths[0], str))
+            if self.has_target_label:
+                self.target_domain_dataset = HubertDataset(
+                    manifest_path[1],
+                    sample_rate=sample_rate,
+                    label_paths=label_paths[1],
+                    label_rates=label_rates,
+                    pad_list=pad_list,
+                    eos_list=eos_list,
+                    label_processors=label_processors,
+                    max_keep_sample_size=max_keep_sample_size,
+                    min_keep_sample_size=min_keep_sample_size,
+                    max_sample_size=max_sample_size,
+                    pad_audio=pad_audio,
+                    normalize=normalize,
+                    store_labels=store_labels,
+                    random_crop=random_crop,
+                    single_target=single_target,
+                    dummy_size=dummy_size
+                )
+                label_paths = label_paths[0]
+            else:
+                self.target_domain_dataset = UnlabeledHubertDataset(manifest_path=manifest_path[1],
+                                                                    sample_rate=sample_rate,
+                                                                    max_keep_sample_size=max_keep_sample_size,
+                                                                    min_keep_sample_size=min_keep_sample_size,
+                                                                    max_sample_size=max_sample_size,
+                                                                    shuffle=shuffle,
+                                                                    pad_audio=pad_audio,
+                                                                    normalize=normalize,
+                                                                    random_crop=random_crop,
+                                                                    single_target=single_target,
+                                                                    dummy_size=dummy_size)
+            manifest_path = manifest_path[0]
+
         self.audio_root, self.audio_names, inds, tot, self.sizes = load_audio(
-            manifest_path, max_keep_sample_size, min_keep_sample_size
+            manifest_path, max_keep_sample_size, min_keep_sample_size, dummy_size=dummy_size
         )
         self.sample_rate = sample_rate
         self.shuffle = shuffle
@@ -151,11 +192,11 @@ class HubertDataset(FairseqDataset):
         )
         self.store_labels = store_labels
         if store_labels:
-            self.label_list = [load_label(p, inds, tot) for p in label_paths]
+            self.label_list = [load_label(p, inds, tot, dummy_size) for p in label_paths]
         else:
             self.label_paths = label_paths
             self.label_offsets_list = [
-                load_label_offset(p, inds, tot) for p in label_paths
+                load_label_offset(p, inds, tot, dummy_size) for p in label_paths
             ]
         assert label_processors is None or len(label_processors) == self.num_labels
         for label_path, label_rate in zip(label_paths, self.label_rates):
@@ -172,10 +213,12 @@ class HubertDataset(FairseqDataset):
             f"pad_audio={pad_audio}, random_crop={random_crop}, "
             f"normalize={normalize}, max_sample_size={self.max_sample_size}"
         )
+        self.num_samples = len(self.sizes)
 
     def get_audio(self, index):
         import soundfile as sf
-
+        # if index is %
+        index = max(0, round(index * (self.num_samples - 1))) if index < 1 else index
         wav_path = os.path.join(self.audio_root, self.audio_names[index])
         _path, slice_ptr = parse_path(wav_path)
         if len(slice_ptr) == 0:
@@ -190,13 +233,17 @@ class HubertDataset(FairseqDataset):
         return wav
 
     def get_label(self, index, label_idx):
+        # if index is %
+        index = max(0, round(index * (self.num_samples - 1))) if index < 1 else index
         if self.store_labels:
             label = self.label_list[label_idx][index]
         else:
             with open(self.label_paths[label_idx]) as f:
                 offset_s, offset_e = self.label_offsets_list[label_idx][index]
-                f.seek(offset_s)
-                label = f.read(offset_e - offset_s)
+                l = f.read()
+                label = l[offset_s:offset_e]
+                # f.seek(offset_s)
+                # label = f.read(offset_e - offset_s)
 
         if self.label_processors is not None:
             label = self.label_processors[label_idx](label)
@@ -206,9 +253,14 @@ class HubertDataset(FairseqDataset):
         return [self.get_label(index, i) for i in range(self.num_labels)]
 
     def __getitem__(self, index):
+        title = self.audio_names[index]
         wav = self.get_audio(index)
         labels = self.get_labels(index)
-        return {"id": index, "source": wav, "label_list": labels}
+        item = {"id": index, "title": title, "source": wav, "label_list": labels}
+        if self.is_multi_domain:
+            item['target_domain_source'] = self.target_domain_dataset.get_audio(index / len(self))
+            item['target_domain_label_list'] = self.target_domain_dataset.get_labels(index / len(self))
+        return item
 
     def __len__(self):
         return len(self.sizes)
@@ -252,9 +304,18 @@ class HubertDataset(FairseqDataset):
         net_input = {"source": collated_audios, "padding_mask": padding_mask}
         batch = {
             "id": torch.LongTensor([s["id"] for s in samples]),
+            "title": [s["title"] for s in samples],
             "net_input": net_input,
         }
-
+        if self.is_multi_domain:
+            target_domain_samples = [{"id": s['id'], "source": s["target_domain_source"],
+                                      "label_list": s['target_domain_label_list'] if self.has_target_label else s[
+                                          "label_list"]}
+                                     for s in samples if 'target_domain_source' in s]
+            assert len(target_domain_samples) == len(samples)
+            target_domain_batch = self.target_domain_dataset.collater(target_domain_samples)
+            batch['target_domain_net_input'] = target_domain_batch['net_input']
+            batch['target_domain_batch'] = target_domain_batch
         if self.single_target:
             batch["target_lengths"] = lengths_list[0]
             batch["ntokens"] = ntokens_list[0]
@@ -294,7 +355,7 @@ class HubertDataset(FairseqDataset):
         if not self.pad_audio:
             rem_size = [len(t) - s for t, s in zip(targets, frm_starts)]
             frm_size = min(frm_size, *rem_size)
-        targets = [t[s : s + frm_size] for t, s in zip(targets, frm_starts)]
+        targets = [t[s: s + frm_size] for t, s in zip(targets, frm_starts)]
         logger.debug(f"audio_starts={audio_starts}")
         logger.debug(f"frame_starts={frm_starts}")
         logger.debug(f"frame_size={frm_size}")
@@ -354,3 +415,101 @@ class HubertDataset(FairseqDataset):
             with torch.no_grad():
                 wav = F.layer_norm(wav, wav.shape)
         return wav
+
+
+class UnlabeledHubertDataset(HubertDataset):
+
+    def __init__(
+            self,
+            manifest_path: str,
+            sample_rate: float,
+            max_keep_sample_size: Optional[int] = None,
+            min_keep_sample_size: Optional[int] = None,
+            max_sample_size: Optional[int] = None,
+            shuffle: bool = True,
+            pad_audio: bool = False,
+            normalize: bool = False,
+            random_crop: bool = False,
+            single_target: bool = False,
+            dummy_size: int = None
+    ):
+        self.audio_root, self.audio_names, inds, tot, self.sizes = load_audio(
+            manifest_path, max_keep_sample_size, min_keep_sample_size, dummy_size=dummy_size
+        )
+        self.sample_rate = sample_rate
+        self.shuffle = shuffle
+        self.random_crop = random_crop
+
+        self.single_target = single_target
+
+        self.max_sample_size = (
+            max_sample_size if max_sample_size is not None else sys.maxsize
+        )
+        self.pad_audio = pad_audio
+        self.normalize = normalize
+        logger.info(
+            f"pad_audio={pad_audio}, random_crop={random_crop}, "
+            f"normalize={normalize}, max_sample_size={self.max_sample_size}"
+        )
+
+    def __getitem__(self, index):
+        wav = self.get_audio(index)
+        return {"id": index, "source": wav}
+
+    def __len__(self):
+        return len(self.sizes)
+
+    def num_tokens(self, index):
+        return self.size(index)
+
+    def size(self, index):
+        if self.pad_audio:
+            return self.sizes[index]
+        return min(self.sizes[index], self.max_sample_size)
+
+    def ordered_indices(self):
+        if self.shuffle:
+            order = [np.random.permutation(len(self))]
+        else:
+            order = [np.arange(len(self))]
+
+        order.append(self.sizes)
+        return np.lexsort(order)[::-1]
+
+    def postprocess(self, wav, cur_sample_rate):
+        if wav.dim() == 2:
+            wav = wav.mean(-1)
+        assert wav.dim() == 1, wav.dim()
+
+        if cur_sample_rate != self.sample_rate:
+            raise Exception(f"sr {cur_sample_rate} != {self.sample_rate}")
+
+        if self.normalize:
+            with torch.no_grad():
+                wav = F.layer_norm(wav, wav.shape)
+        return wav
+
+    def collater(self, samples):
+        # target = max(sizes) -> random_crop not used
+        # target = max_sample_size -> random_crop used for long
+        samples = [s for s in samples if s["source"] is not None]
+        if len(samples) == 0:
+            return {}
+
+        audios = [s["source"] for s in samples]
+        audio_sizes = [len(s) for s in audios]
+        if self.pad_audio:
+            audio_size = min(max(audio_sizes), self.max_sample_size)
+        else:
+            audio_size = min(min(audio_sizes), self.max_sample_size)
+        collated_audios, padding_mask, audio_starts = self.collater_audio(
+            audios, audio_size
+        )
+
+        net_input = {"source": collated_audios, "padding_mask": padding_mask}
+        batch = {
+            "id": torch.LongTensor([s["id"] for s in samples]),
+            "net_input": net_input,
+        }
+
+        return batch
