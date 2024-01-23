@@ -8,16 +8,16 @@
 import logging
 import os
 import sys
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 import numpy as np
+from omegaconf import MISSING
 
-from dataclasses import dataclass, field
 from fairseq.data import Dictionary, HubertDataset
 from fairseq.dataclass.configs import FairseqDataclass
 from fairseq.tasks import register_task
 from fairseq.tasks.fairseq_task import FairseqTask
-from omegaconf import MISSING
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class LabelEncoder(object):
 @dataclass
 class HubertPretrainingConfig(FairseqDataclass):
     data: str = field(default=MISSING, metadata={"help": "path to data directory"})
+    target_data: Optional[str] = field(default=None, metadata={"help": "path to data directory"})
     fine_tuning: bool = field(
         default=False, metadata={"help": "set to true if fine-tuning Hubert"}
     )
@@ -50,6 +51,12 @@ class HubertPretrainingConfig(FairseqDataclass):
         },
     )
     label_dir: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "if set, looks for labels in this directory instead",
+        },
+    )
+    target_label_dir: Optional[str] = field(
         default=None,
         metadata={
             "help": "if set, looks for labels in this directory instead",
@@ -103,6 +110,10 @@ class HubertPretrainingConfig(FairseqDataclass):
     pad_audio: Optional[bool] = field(
         default=False,
         metadata={"help": "pad audio to the longest one in the batch if true"},
+    )
+    dummy_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "size of dummy train/val sets"},
     )
 
 
@@ -162,12 +173,16 @@ class HubertPretrainingTask(FairseqTask):
         return self.cfg.label_dir
 
     def load_dataset(self, split: str, **kwargs) -> None:
-        manifest = f"{self.cfg.data}/{split}.tsv"
+        manifest = f"{self.cfg.data}/{split}.tsv" if not self.cfg.target_data else [
+            f"{self.cfg.data}/{split}.tsv", f"{self.cfg.target_data}/{split}.tsv"]
         dicts = [self.target_dictionary] if self.cfg.fine_tuning and self.cfg.single_target else self.dictionaries
         pad_list = [dict.pad() for dict in dicts]
         eos_list = [dict.eos() for dict in dicts]
         procs = [LabelEncoder(dict) for dict in dicts]
         paths = [f"{self.get_label_dir()}/{split}.{l}" for l in self.cfg.labels]
+
+        if self.cfg.target_label_dir:
+            paths = [paths, [f"{self.cfg.target_label_dir}/{split}.{l}" for l in self.cfg.labels]]
 
         # hubert v1: pad_audio=True, random_crop=False;
         self.datasets[split] = HubertDataset(
@@ -186,6 +201,7 @@ class HubertPretrainingTask(FairseqTask):
             store_labels=False,
             random_crop=self.cfg.random_crop,
             single_target=self.cfg.single_target,
+            dummy_size=self.cfg.dummy_size
         )
 
     def max_positions(self) -> Tuple[int, int]:
