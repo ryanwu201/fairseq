@@ -413,13 +413,16 @@ def alignment(song_pred, idx, phone_blank, lyrics_int):
     y = 2 * lyrics_length
     path.append([x, y])
     while x > 0 or y > 0:
-        if opt[x][y] == 1:
-            x -= 1
-            y -= 1
-        elif opt[x][y] == 2:
-            x -= 1
-            y -= 2
-        else:
+        try:
+            if opt[x][y] == 1:
+                x -= 1
+                y -= 1
+            elif opt[x][y] == 2:
+                x -= 1
+                y -= 2
+            else:
+                x -= 1
+        except:
             x -= 1
         path.append([x, y])
 
@@ -429,6 +432,13 @@ def alignment(song_pred, idx, phone_blank, lyrics_int):
 
     word_i = 0
     while word_i < len(idx):
+        if path_i >= len(path):
+            # append
+            word_align.append([word_align[-1][1] + 1, word_align[-1][1] + 2])
+            # move to next word
+            word_i += 1
+            continue
+            
         # e.g. "happy day"
         # find the first time "h" appears
         if path[path_i][1] == 2 * idx[word_i][0] + 1:
