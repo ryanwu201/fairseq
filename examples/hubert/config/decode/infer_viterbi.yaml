@@ -19,6 +19,8 @@ task:
 
 decoding:
   type: viterbi
+  align: false
+  pred_dir: ???
   unique_wer_file: true
 common_eval:
   results_path: ???

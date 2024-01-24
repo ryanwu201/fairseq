@@ -8,19 +8,17 @@
 from typing import Union
 
 from fairseq.data.dictionary import Dictionary
-
-from .decoder_config import DecoderConfig, FlashlightDecoderConfig
 from .base_decoder import BaseDecoder
+from .decoder_config import DecoderConfig, FlashlightDecoderConfig
 
 
 def Decoder(
-    cfg: Union[DecoderConfig, FlashlightDecoderConfig], tgt_dict: Dictionary
+        cfg: Union[DecoderConfig, FlashlightDecoderConfig], tgt_dict: Dictionary
 ) -> BaseDecoder:
-
     if cfg.type == "viterbi":
         from .viterbi_decoder import ViterbiDecoder
 
-        return ViterbiDecoder(tgt_dict)
+        return ViterbiDecoder(tgt_dict, cfg)
     if cfg.type == "kenlm":
         from .flashlight_decoder import KenLMDecoder
 

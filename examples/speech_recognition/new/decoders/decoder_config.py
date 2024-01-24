@@ -21,6 +21,14 @@ class DecoderConfig(FairseqDataclass):
         default="viterbi",
         metadata={"help": "The type of decoder to use"},
     )
+    align: bool = field(
+        default=False,
+        metadata={"help": "If set, align"},
+    )
+    pred_dir: str = field(
+        default=MISSING,
+        metadata={"help": "Prediction path"},
+    )
 
 
 @dataclass

@@ -10,11 +10,15 @@ import torch
 from fairseq.data.dictionary import Dictionary
 from fairseq.models.fairseq_model import FairseqModel
 
+from .decoder_config import DecoderConfig
+
 
 class BaseDecoder:
-    def __init__(self, tgt_dict: Dictionary) -> None:
+    def __init__(self, tgt_dict: Dictionary, cfg: DecoderConfig = None) -> None:
         self.tgt_dict = tgt_dict
         self.vocab_size = len(tgt_dict)
+        self.cfg = cfg
+        self.emissions = None
 
         self.blank = (
             tgt_dict.index("<ctc_blank>")
@@ -29,18 +33,18 @@ class BaseDecoder:
             self.silence = tgt_dict.eos()
 
     def generate(
-        self, models: List[FairseqModel], sample: Dict[str, Any], **unused
+            self, models: List[FairseqModel], sample: Dict[str, Any], **unused
     ) -> List[List[Dict[str, torch.LongTensor]]]:
         encoder_input = {
             k: v for k, v in sample["net_input"].items() if k != "prev_output_tokens"
         }
-        emissions = self.get_emissions(models, encoder_input)
-        return self.decode(emissions)
+        self.emissions = self.get_emissions(models, encoder_input)
+        return self.decode(self.emissions)
 
     def get_emissions(
-        self,
-        models: List[FairseqModel],
-        encoder_input: Dict[str, Any],
+            self,
+            models: List[FairseqModel],
+            encoder_input: Dict[str, Any],
     ) -> torch.FloatTensor:
         model = models[0]
         encoder_out = model(**encoder_input)
@@ -56,7 +60,7 @@ class BaseDecoder:
         return torch.LongTensor(list(idxs))
 
     def decode(
-        self,
-        emissions: torch.FloatTensor,
+            self,
+            emissions: torch.FloatTensor,
     ) -> List[List[Dict[str, torch.LongTensor]]]:
         raise NotImplementedError
