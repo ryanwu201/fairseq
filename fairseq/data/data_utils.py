@@ -36,14 +36,14 @@ def infer_language_pair(path):
 
 
 def collate_tokens(
-    values,
-    pad_idx,
-    eos_idx=None,
-    left_pad=False,
-    move_eos_to_beginning=False,
-    pad_to_length=None,
-    pad_to_multiple=1,
-    pad_to_bsz=None,
+        values,
+        pad_idx,
+        eos_idx=None,
+        left_pad=False,
+        move_eos_to_beginning=False,
+        pad_to_length=None,
+        pad_to_multiple=1,
+        pad_to_bsz=None,
 ):
     """Convert a list of 1d tensors into a padded 2d tensor."""
     size = max(v.size(0) for v in values)
@@ -67,12 +67,12 @@ def collate_tokens(
             dst.copy_(src)
 
     for i, v in enumerate(values):
-        copy_tensor(v, res[i][size - len(v) :] if left_pad else res[i][: len(v)])
+        copy_tensor(v, res[i][size - len(v):] if left_pad else res[i][: len(v)])
     return res
 
 
 def load_indexed_dataset(
-    path, dictionary=None, dataset_impl=None, combine=False, default="cached"
+        path, dictionary=None, dataset_impl=None, combine=False, default="cached"
 ):
     """A helper function for loading indexed datasets.
 
@@ -214,9 +214,9 @@ def filter_by_size(indices, dataset, max_positions, raise_exception=False):
             ignored = indices[dataset.sizes[indices] > max_positions].tolist()
             indices = indices[dataset.sizes[indices] <= max_positions]
         elif (
-            hasattr(dataset, "sizes")
-            and isinstance(dataset.sizes, list)
-            and len(dataset.sizes) == 1
+                hasattr(dataset, "sizes")
+                and isinstance(dataset.sizes, list)
+                and len(dataset.sizes) == 1
         ):
             ignored = indices[dataset.sizes[0][indices] > max_positions].tolist()
             indices = indices[dataset.sizes[0][indices] <= max_positions]
@@ -268,7 +268,7 @@ def filter_paired_dataset_indices_by_size(src_sizes, tgt_sizes, indices, max_siz
     else:
         ignored = indices[
             (src_sizes[indices] > max_src_size) | (tgt_sizes[indices] > max_tgt_size)
-        ]
+            ]
     if len(ignored) > 0:
         if tgt_sizes is None:
             indices = indices[src_sizes[indices] <= max_src_size]
@@ -276,18 +276,18 @@ def filter_paired_dataset_indices_by_size(src_sizes, tgt_sizes, indices, max_siz
             indices = indices[
                 (src_sizes[indices] <= max_src_size)
                 & (tgt_sizes[indices] <= max_tgt_size)
-            ]
+                ]
     return indices, ignored.tolist()
 
 
 def batch_by_size(
-    indices,
-    num_tokens_fn,
-    num_tokens_vec=None,
-    max_tokens=None,
-    max_sentences=None,
-    required_batch_size_multiple=1,
-    fixed_shapes=None,
+        indices,
+        num_tokens_fn,
+        num_tokens_vec=None,
+        max_tokens=None,
+        max_sentences=None,
+        required_batch_size_multiple=1,
+        fixed_shapes=None,
 ):
     """
     Yield mini-batches of indices bucketed by size. Batches may contain
@@ -378,6 +378,8 @@ def post_process(sentence: str, symbol: str):
         sentence = sentence.replace(" ", "").replace("_", " ").strip()
     elif symbol == "letter":
         sentence = sentence.replace(" ", "").replace("|", " ").strip()
+    elif symbol == "phoneme":
+        sentence = sentence.strip().replace(" |", "").strip()
     elif symbol == "silence":
         import re
 
@@ -397,23 +399,23 @@ def post_process(sentence: str, symbol: str):
 
 
 def compute_mask_indices(
-    shape: Tuple[int, int],
-    padding_mask: Optional[torch.Tensor],
-    mask_prob: float,
-    mask_length: int,
-    mask_type: str = "static",
-    mask_other: float = 0.0,
-    min_masks: int = 0,
-    no_overlap: bool = False,
-    min_space: int = 0,
-    require_same_masks: bool = True,
-    mask_dropout: float = 0.0,
-    add_masks: bool = False,
-    seed: Optional[int] = None,
-    epoch: Optional[int] = None,
-    indices: Optional[torch.Tensor] = None,
-    idc_select_ver: int = 1,  # 2 to reproduce mask_tokens_dataset
-    num_mask_ver: int = 2,  # 2 to reproduce mask_tokens_dataset
+        shape: Tuple[int, int],
+        padding_mask: Optional[torch.Tensor],
+        mask_prob: float,
+        mask_length: int,
+        mask_type: str = "static",
+        mask_other: float = 0.0,
+        min_masks: int = 0,
+        no_overlap: bool = False,
+        min_space: int = 0,
+        require_same_masks: bool = True,
+        mask_dropout: float = 0.0,
+        add_masks: bool = False,
+        seed: Optional[int] = None,
+        epoch: Optional[int] = None,
+        indices: Optional[torch.Tensor] = None,
+        idc_select_ver: int = 1,  # 2 to reproduce mask_tokens_dataset
+        num_mask_ver: int = 2,  # 2 to reproduce mask_tokens_dataset
 ) -> np.ndarray:
     """
     Computes random mask spans for a given shape
@@ -589,22 +591,21 @@ def compute_mask_indices(
 
 
 def compute_block_mask_2d(
-    shape: Tuple[int, int],
-    mask_prob: float,
-    mask_length: int,
-    mask_prob_adjust: float = 0,
-    inverse_mask: bool = False,
-    require_same_masks: bool = True,
-    expand_adjcent: bool = False,
-    mask_dropout: float = 0,
-    non_overlapping: bool = False,
+        shape: Tuple[int, int],
+        mask_prob: float,
+        mask_length: int,
+        mask_prob_adjust: float = 0,
+        inverse_mask: bool = False,
+        require_same_masks: bool = True,
+        expand_adjcent: bool = False,
+        mask_dropout: float = 0,
+        non_overlapping: bool = False,
 ) -> torch.Tensor:
-
     assert mask_length > 1
 
     B, L = shape
 
-    d = int(L**0.5)
+    d = int(L ** 0.5)
 
     if inverse_mask:
         mask_prob = 1 - mask_prob
@@ -637,7 +638,7 @@ def compute_block_mask_2d(
                 B,
                 int(
                     L
-                    * ((mask_prob + mask_prob_adjust) / mask_length**2)
+                    * ((mask_prob + mask_prob_adjust) / mask_length ** 2)
                     * (1 + mask_dropout)
                 ),
             ),
@@ -724,17 +725,16 @@ def compute_block_mask_2d(
 
 
 def compute_block_mask_1d(
-    shape: Tuple[int, int],
-    mask_prob: float,
-    mask_length: int,
-    mask_prob_adjust: float = 0,
-    inverse_mask: bool = False,
-    require_same_masks: bool = True,
-    expand_adjcent: bool = False,
-    mask_dropout: float = 0,
-    non_overlapping: bool = False,
+        shape: Tuple[int, int],
+        mask_prob: float,
+        mask_length: int,
+        mask_prob_adjust: float = 0,
+        inverse_mask: bool = False,
+        require_same_masks: bool = True,
+        expand_adjcent: bool = False,
+        mask_dropout: float = 0,
+        non_overlapping: bool = False,
 ) -> torch.Tensor:
-
     B, L = shape
 
     if inverse_mask:
@@ -909,10 +909,10 @@ def _find_extra_valid_paths(dataset_path: str) -> set:
 def raise_if_valid_subsets_unintentionally_ignored(train_cfg) -> None:
     """Raises if there are paths matching 'valid*[0-9].*' which are not combined or ignored."""
     if (
-        train_cfg.dataset.ignore_unused_valid_subsets
-        or train_cfg.dataset.combine_valid_subsets
-        or train_cfg.dataset.disable_validation
-        or not hasattr(train_cfg.task, "data")
+            train_cfg.dataset.ignore_unused_valid_subsets
+            or train_cfg.dataset.combine_valid_subsets
+            or train_cfg.dataset.disable_validation
+            or not hasattr(train_cfg.task, "data")
     ):
         return
     other_paths = _find_extra_valid_paths(train_cfg.task.data)
@@ -925,13 +925,13 @@ def raise_if_valid_subsets_unintentionally_ignored(train_cfg) -> None:
 
 
 def compute_mask_indices_for_one(
-    sz,
-    mask_prob: float,
-    mask_length: int,
-    seed=None,
-    epoch=None,
-    index=None,
-    min_masks=0,
+        sz,
+        mask_prob: float,
+        mask_length: int,
+        seed=None,
+        epoch=None,
+        index=None,
+        min_masks=0,
 ):
     """
     set seed, epoch, index for deterministic masking
@@ -962,15 +962,15 @@ def compute_mask_indices_for_one(
 
 
 def compute_mask_indices_v2(
-    shape: Tuple[int, int],
-    padding_mask: Optional[torch.Tensor],
-    mask_prob: float,
-    mask_length: int,
-    min_masks: int = 0,
-    require_same_masks: bool = True,
-    seed: Optional[int] = None,
-    epoch: Optional[int] = None,
-    indices: Optional[torch.Tensor] = None,
+        shape: Tuple[int, int],
+        padding_mask: Optional[torch.Tensor],
+        mask_prob: float,
+        mask_length: int,
+        min_masks: int = 0,
+        require_same_masks: bool = True,
+        seed: Optional[int] = None,
+        epoch: Optional[int] = None,
+        indices: Optional[torch.Tensor] = None,
 ) -> np.ndarray:
     bsz, all_sz = shape
     mask = np.full((bsz, all_sz), False)
@@ -1002,20 +1002,20 @@ def compute_mask_indices_v2(
 
 # TODO: a copy of the original compute_mask_indices
 def compute_mask_indices_v3(
-    shape: Tuple[int, int],
-    padding_mask: Optional[torch.Tensor],
-    mask_prob: float,
-    mask_length: int,
-    mask_type: str = "static",
-    mask_other: float = 0.0,
-    min_masks: int = 0,
-    no_overlap: bool = False,
-    min_space: int = 0,
-    require_same_masks: bool = True,
-    mask_dropout: float = 0.0,
-    seed: Optional[int] = None,
-    epoch: Optional[int] = None,
-    indices: Optional[torch.Tensor] = None,
+        shape: Tuple[int, int],
+        padding_mask: Optional[torch.Tensor],
+        mask_prob: float,
+        mask_length: int,
+        mask_type: str = "static",
+        mask_other: float = 0.0,
+        min_masks: int = 0,
+        no_overlap: bool = False,
+        min_space: int = 0,
+        require_same_masks: bool = True,
+        mask_dropout: float = 0.0,
+        seed: Optional[int] = None,
+        epoch: Optional[int] = None,
+        indices: Optional[torch.Tensor] = None,
 ) -> np.ndarray:
     """
     Computes random mask spans for a given shape

@@ -27,7 +27,7 @@ class CtcCriterionConfig(FairseqDataclass):
         metadata={"help": "zero inf loss when source length <= target length"},
     )
     sentence_avg: bool = II("optimization.sentence_avg")
-    post_process: str = field(
+    post_process: Optional[str] = field(
         default="letter",
         metadata={
             "help": "how to post process predictions into words. can be letter, "
