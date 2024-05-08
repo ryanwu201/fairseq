@@ -255,19 +255,38 @@ class HubertCtcWithDomain(HubertCtc):
 
 @register_model("hubert_ctc_with_pitch_detection", dataclass=HubertCtcConfig)
 class HubertCtcWithPitchDetection(HubertCtc):
+    def __init__(self, cfg: HubertCtcConfig, w2v_encoder: BaseFairseqModel, task: FairseqTask):
+        super().__init__(cfg, w2v_encoder)
+        self.task = task
+        d = self.w2v_encoder.w2v_args.model.encoder_embed_dim
+        self.w2v_encoder.proj_prev = Linear(d, d)
+        self.w2v_encoder.proj = Linear(d, len(task.dictionaries[0]))
+        self.w2v_encoder.pitch_proj = Linear(d, len(task.dictionaries[1]))
+
     def forward(self, **kwargs):
         kwargs['ret_conv'] = kwargs.get('ret_conv', self.cfg.extra_ret_conv)
 
         out = self.w2v_encoder(**kwargs)
 
-        x = out['encoder_out']
+        x = out['features']
 
-        y_lyrics = torch.sum(x, dim=3)  # (time, batch, n_ch)
-        y_melody = torch.sum(x, dim=2)  # (time, batch, n_p)
+        x = self.w2v_encoder.proj_prev(x)
 
-        out["encoder_out"] = y_lyrics
-        out["melody_out"] = y_melody
+        x_phone = self.w2v_encoder.proj(x.clone())
+        x_pitch = self.w2v_encoder.pitch_proj(x.clone())
+
+        # y_lyrics = torch.sum(x, dim=3)  # (time, batch, n_ch)
+        # y_melody = torch.sum(x, dim=2)  # (time, batch, n_p)
+
+        out["encoder_out"] = x_phone
+        out["melody_out"] = x_pitch
         return out
+
+    @classmethod
+    def build_model(cls, cfg: HubertCtcConfig, task: FairseqTask):
+        """Build a new model instance."""
+        w2v_encoder = HubertEncoder(cfg, task, encoder_only=True)
+        return cls(cfg, w2v_encoder, task)
 
 
 @dataclass

@@ -29,7 +29,7 @@ class CtcCrossEntropyCriterionConfig(FairseqDataclass):
         metadata={"help": "zero inf loss when source length <= target length"},
     )
     sentence_avg: bool = II("optimization.sentence_avg")
-    post_process: str = field(
+    post_process:  Optional[str]  = field(
         default="letter",
         metadata={
             "help": "how to post process predictions into words. can be letter, "
@@ -69,6 +69,10 @@ class CtcCrossEntropyCriterionConfig(FairseqDataclass):
     loss_w: float = field(
         default=0.5,
         metadata={"help": "weight of cross entropy loss"},
+    )
+    only_pitch: bool = field(
+        default=False,
+        metadata={"help": "only pitch supervision if True"},
     )
 
 
@@ -121,6 +125,7 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
         self.zero_infinity = cfg.zero_infinity
         self.sentence_avg = cfg.sentence_avg
         self.loss_w = cfg.loss_w
+        self.only_pitch = cfg.only_pitch
 
     def normalize_frm_label(self, time_label, input_len, feat_len):
         tar = np.full(shape=(time_label.shape[0], feat_len), fill_value=self.task.dictionaries[1].pad_index,
@@ -140,8 +145,12 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
 
     def forward(self, model, sample, reduce=True, **kwargs):
         net_output = model(**sample["net_input"])  # (T, B, C): (time, batch, phone, pitch) from the encoder
-        y_lyrics = torch.sum(net_output["encoder_out"], dim=3)  # (time, batch, n_ch)
-        y_melody = torch.sum(net_output["encoder_out"], dim=2)  # (time, batch, n_p)
+        if 'melody_out' not in net_output:
+            y_lyrics = torch.sum(net_output["encoder_out"], dim=3)  # (time, batch, n_ch)
+            y_melody = torch.sum(net_output["encoder_out"], dim=2)  # (time, batch, n_p)
+        else:
+            y_lyrics = net_output["encoder_out"]
+            y_melody = net_output["melody_out"]
 
         y_melody = y_melody.transpose(1, 2)  # (time, n_p, batch)
         y_melody = y_melody.transpose(0, 2)  # (batch, n_p, time)
@@ -150,8 +159,8 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
             {'encoder_out': y_lyrics}, log_probs=True, dim=2
         ).contiguous()
 
-        melody_target = self.normalize_frm_label(sample["target_list"][1],sample['net_input']['source'].shape[-1], y_melody.shape[2])
-
+        melody_target = self.normalize_frm_label(sample["target_list"][1], sample['net_input']['source'].shape[-1],
+                                                 y_melody.shape[2])
         sample["target_lengths"] = sample["target_lengths_list"][0]
         sample["ntokens"] = sample["ntokens_list"][0]
         sample["target"] = sample["target_list"][0]
@@ -209,11 +218,12 @@ class CtcCrossEntropyCriterion(FairseqCriterion):
                 zero_infinity=self.zero_infinity,
             )
             loss_ce = F.cross_entropy(y_melody, melody_target)
-            loss = loss_ctc + self.loss_w * loss_ce
+            loss = (loss_ctc + self.loss_w * loss_ce) if not self.only_pitch else loss_ce
         ntokens = (
             sample["ntokens"] if "ntokens" in sample else target_lengths.sum().item()
         )
-
+        # print('sample["target"]', sample["target"])
+        # print('ntokens', ntokens)
         sample_size = sample["target"].size(0) if self.sentence_avg else ntokens
         logging_output = {
             "loss": utils.item(loss.data),  # * sample['ntokens'],
